@@ -7,7 +7,9 @@ import importlib.util
 import json
 import sqlite3
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 from _client import _keypair
@@ -85,6 +87,40 @@ def test_challenge_database_does_not_store_the_plaintext_nonce(client):
     with sqlite3.connect(passport.DB_PATH) as db:
         stored = db.execute("SELECT * FROM challenges").fetchone()
     assert proof["nonce"] not in map(str, stored)
+
+
+def test_challenge_rate_limit_is_atomic_across_concurrent_requests(client):
+    did, _sign = _keypair(21)
+    claimed = profile(username="challenge-race")
+    for _ in range(4):
+        challenge(client, did, claimed)
+
+    workers = 8
+    barrier = Barrier(workers)
+
+    def submit(_index):
+        barrier.wait()
+        return client.post(
+            "/api/challenges",
+            json={"did": did, "profile": claimed},
+        )
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        responses = list(pool.map(submit, range(workers)))
+
+    statuses = [response.status_code for response in responses]
+    assert statuses.count(200) == 1
+    assert statuses.count(429) == workers - 1
+    assert sum("nonce" in response.json() for response in responses) == 1
+
+    requester = passport._hash("testclient")
+    cutoff = int(passport.time.time()) - 60
+    with sqlite3.connect(passport.DB_PATH) as db:
+        stored = db.execute(
+            "SELECT COUNT(*) FROM challenges WHERE requester_hash=? AND created_at>?",
+            (requester, cutoff),
+        ).fetchone()[0]
+    assert stored == 5
 
 
 def test_challenge_binds_the_exact_profile_and_owner_can_update_with_a_fresh_one(client):

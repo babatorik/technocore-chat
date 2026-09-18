@@ -175,6 +175,7 @@ async def create_challenge(request: Request):
     requester = _client_hash(request)
     now = int(time.time())
     with database() as db:
+        db.execute("BEGIN IMMEDIATE")
         db.execute("DELETE FROM challenges WHERE expires_at<=?", (now,))
         count = db.execute(
             "SELECT COUNT(*) FROM challenges WHERE requester_hash=? AND created_at>?",
