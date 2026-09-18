@@ -165,6 +165,10 @@ def validated_github_repo(value: object) -> str:
 
 def github_items(repo: str, identities: dict[str, str], token: str) -> list[dict]:
     repo = validated_github_repo(repo)
+    normalized = {login.casefold(): did for login, did in identities.items()}
+    if len(normalized) != len(identities):
+        raise ValueError("duplicate GitHub login after case normalization")
+    identities = normalized
     root = f"https://api.github.com/repos/{repo}"
     metadata = fetch_json(root, token)
     try:
@@ -184,7 +188,7 @@ def github_items(repo: str, identities: dict[str, str], token: str) -> list[dict
     items = []
     for row in pulls:
         login = row.get("user", {}).get("login") if isinstance(row, dict) else None
-        did = identities.get(login or "")
+        did = identities.get(login.casefold()) if isinstance(login, str) else None
         if not did or not row.get("merged_at"):
             continue
         items.append(
@@ -210,7 +214,7 @@ def github_items(repo: str, identities: dict[str, str], token: str) -> list[dict
         if not isinstance(row, dict) or "pull_request" in row:
             continue
         login = row.get("user", {}).get("login")
-        did = identities.get(login or "")
+        did = identities.get(login.casefold()) if isinstance(login, str) else None
         if not did:
             continue
         items.append(

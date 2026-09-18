@@ -101,9 +101,11 @@ async def _payload(request: Request) -> dict:
         raise ValueError("content-length must be an integer") from error
     if declared > MAX_BODY:
         raise ValueError("body is too large")
-    body = await request.body()
-    if len(body) > MAX_BODY:
-        raise ValueError("body is too large")
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > MAX_BODY:
+            raise ValueError("body is too large")
+        body.extend(chunk)
     value = json.loads(body)
     if not isinstance(value, dict):
         raise ValueError("JSON object required")

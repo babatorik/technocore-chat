@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 import sqlite3
@@ -527,3 +528,62 @@ def test_public_page_is_static_csp_pinned_and_search_returns_safe_json(client):
     assert unsafe["bio"] not in page.text
     result = client.get("/api/search?q=safe-name").json()["results"][0]
     assert result["bio"] == unsafe["bio"]
+
+
+def test_payload_stops_at_stream_limit_without_content_length():
+    calls = 0
+    chunks = iter((b"x" * passport.MAX_BODY, b"y"))
+
+    async def receive():
+        nonlocal calls
+        calls += 1
+        if calls > 2:
+            raise AssertionError("payload reader continued after the size limit")
+        return {
+            "type": "http.request",
+            "body": next(chunks),
+            "more_body": True,
+        }
+
+    request = passport.Request(
+        {"type": "http", "method": "POST", "path": "/", "headers": []},
+        receive,
+    )
+    with pytest.raises(ValueError, match="body is too large"):
+        asyncio.run(passport._payload(request))
+    assert calls == 2
+
+
+def test_github_login_matching_is_case_insensitive(monkeypatch):
+    did, _sign = _keypair(21)
+    pull = {
+        "number": 7,
+        "title": "Mixed-case contributor",
+        "merged_at": "2026-01-02T00:00:00Z",
+        "html_url": "https://github.com/owner/repo/pull/7",
+        "url": "https://api.github.com/repos/owner/repo/pulls/7",
+        "user": {"login": "alice"},
+    }
+    issue = {
+        "number": 8,
+        "title": "Mixed-case issue author",
+        "created_at": "2026-01-03T00:00:00Z",
+        "html_url": "https://github.com/owner/repo/issues/8",
+        "url": "https://api.github.com/repos/owner/repo/issues/8",
+        "user": {"login": "ALICE"},
+    }
+
+    def fake_fetch(url, _token=""):
+        if "?" not in url:
+            return {"full_name": "owner/repo"}
+        if "/pulls?" in url:
+            return [pull]
+        return [issue]
+
+    monkeypatch.setattr(indexer, "fetch_json", fake_fetch)
+    items = indexer.github_items("owner/repo", {"Alice": did}, "")
+    assert {item["kind"] for item in items} == {"pull_request", "issue"}
+    assert {item["did"] for item in items} == {did}
+
+    with pytest.raises(ValueError, match="duplicate GitHub login"):
+        indexer.github_items("owner/repo", {"Alice": did, "alice": did}, "")
